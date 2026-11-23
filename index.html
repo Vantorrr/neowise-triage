@@ -8,7 +8,11 @@
     body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
     button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    pre { white-space: pre-wrap; background: #f6f6f6; padding: .75rem; }
+    .notice { padding: .75rem; border-radius: .25rem; }
+    .notice.warn { background: #fff4d6; border: 1px solid #e6c35c; }
+    .notice.error { background: #fde2e2; border: 1px solid #e08a8a; }
+    [hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -18,18 +22,69 @@
     <textarea id="message" rows="4"></textarea>
     <button type="submit">Разобрать заявку</button>
   </form>
-  <pre id="result" aria-live="polite"></pre>
+  <div id="status" class="notice" role="status" aria-live="polite" hidden></div>
+  <section id="result" hidden>
+    <p><strong>Тема:</strong> <span id="topic"></span></p>
+    <p><strong>Черновик ответа</strong> (проверьте перед отправкой):</p>
+    <pre id="draft"></pre>
+  </section>
   <script type="module">
     const form = document.querySelector("form");
+    const input = document.querySelector("#message");
+    const button = form.querySelector("button");
+    const status = document.querySelector("#status");
     const result = document.querySelector("#result");
+    const topicEl = document.querySelector("#topic");
+    const draftEl = document.querySelector("#draft");
+    const TOPIC_LABELS = { delivery: "Доставка", pricing: "Цены", other: "Другое" };
+    let lastRequest = 0;
+
+    function clearResult() {
+      topicEl.textContent = "";
+      draftEl.textContent = "";
+      result.hidden = true;
+    }
+    function showNotice(text, kind) {
+      status.textContent = text;
+      status.className = `notice ${kind}`;
+      status.hidden = false;
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const reply = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: document.querySelector("#message").value }),
-      });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
+      const text = input.value;
+      clearResult();
+      if (text.trim() === "") {
+        showNotice("Введите текст заявки.", "error");
+        return;
+      }
+      const requestId = ++lastRequest;
+      showNotice("Разбираем заявку…", "warn");
+      button.disabled = true;
+      try {
+        const reply = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await reply.json();
+        if (requestId !== lastRequest) return; // пришёл устаревший ответ
+        if (data.status === "ready") {
+          status.hidden = true;
+          topicEl.textContent = TOPIC_LABELS[data.topic] ?? data.topic;
+          draftEl.textContent = data.draft;
+          result.hidden = false;
+        } else if (data.status === "invalid_input") {
+          showNotice("Введите текст заявки.", "error");
+        } else {
+          showNotice("AI не смог надёжно разобрать заявку. Нужен ручной разбор: определите тему и напишите ответ сами.", "warn");
+        }
+      } catch {
+        if (requestId !== lastRequest) return;
+        showNotice("Сервис недоступен. Разберите заявку вручную или попробуйте позже.", "error");
+      } finally {
+        if (requestId === lastRequest) button.disabled = false;
+      }
     });
   </script>
 </body>
